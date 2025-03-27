@@ -1,6 +1,7 @@
 import pyautogui
 import random
 import time
+import logging
 
 def get_response(issue_type):
     responses = {
@@ -16,10 +17,25 @@ def type_response(response):
     pyautogui.typewrite(response, interval=0.05)
     pyautogui.press("enter")
 
+logging.basicConfig(
+    level=logging.INFO,
+    filename="our_logs.log",
+    filemode="a",
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+
 def handle_ticket(issue_type):
+    logging.info(f"Processing ticket {ticket_id}: {issue_type}")
     response = get_response(issue_type)
     type_response(response)
-    print(f"Responded to {issue_type} with: {response}")
+    logging.info(f"Response sent: {response}")
+
+try:
+    handle_ticket(ticket_data)
+except Exception as e:
+    logging.error(f"Error processing ticket {ticket_id}: {str(e)}")
 
 
 issue_example = "access"  
