@@ -1,42 +1,105 @@
-import pyautogui
-import random
-import time
-import logging
+import re
+import json
+import requests
+import imaplib
+import email
+from email.header import decode_header
+from dotenv import load_dotenv
+import os
 
-def get_response(issue_type):
-    responses = {
-        "access": ["Here you go!", "Your access's ready to use", "All set"],
-        "template": ["it's here \"link\"", "have you tried to look here \"link\"", "found it for you, here you are \"link\""],
-        "error": ["fixed", "try now please, should be OK", "thanks for letting me know, now it's working"],
-        "rights": ["All done", "you've got this", "done"]
+# Load environment variables
+load_dotenv()
+
+# Load keyword-to-intent map
+with open("keywords.json", "r", encoding="utf-8") as file:
+    KEYWORDS_LIST = json.load(file)
+
+# Convert list format into dict format
+KEYWORDS = {}
+for entry in KEYWORDS_LIST:
+    for intent, keywords in entry.items():
+        KEYWORDS[intent] = keywords
+
+# Telegram bot credentials from .env
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+# Email credentials and settings from .env
+EMAIL = os.getenv("EMAIL")
+PASSWORD = os.getenv("EMAIL_PASSWORD")
+IMAP_SERVER = os.getenv("IMAP_SERVER")
+SENDER_EMAIL = os.getenv("SENDER_EMAIL")
+
+def extract_name(text):
+    match = re.search(r"Заявник:\s*(.+?)\s*-", text)
+    return match.group(1) if match else "[Unknown Name]"
+
+def detect_intent(body):
+    body = body.lower()
+    for intent, keywords in KEYWORDS.items():
+        if any(word.lower() in body for word in keywords):
+            return intent
+    return "Too messy to classify. Check manually."
+
+def parse_email(subject, body):
+    name = extract_name(body)
+    intent = detect_intent(body)
+    return {
+        "subject": subject.strip(),
+        "name": name.strip(),
+        "intent": intent.strip()
     }
-    return random.choice(responses.get(issue_type, ["No predefined response"]))
 
-def type_response(response):
-    time.sleep(1)  
-    pyautogui.typewrite(response, interval=0.05)
-    pyautogui.press("enter")
+def send_to_telegram(message):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": message
+    }
+    response = requests.post(url, data=payload)
+    return response.status_code == 200
 
-logging.basicConfig(
-    level=logging.INFO,
-    filename="our_logs.log",
-    filemode="a",
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
-)
+def fetch_and_process_emails():
+    mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+    mail.login(EMAIL, PASSWORD)
+    mail.select("inbox")
 
+    status, messages = mail.search(None, f'(UNSEEN FROM "{SENDER_EMAIL}")')
+    email_ids = messages[0].split()
 
-def handle_ticket(issue_type):
-    logging.info(f"Processing ticket {ticket_id}: {issue_type}")
-    response = get_response(issue_type)
-    type_response(response)
-    logging.info(f"Response sent: {response}")
+    for e_id in email_ids:
+        _, msg_data = mail.fetch(e_id, "(RFC822)")
+        msg = email.message_from_bytes(msg_data[0][1])
 
-try:
-    handle_ticket(ticket_data)
-except Exception as e:
-    logging.error(f"Error processing ticket {ticket_id}: {str(e)}")
+        # Decode subject
+        raw_subject = decode_header(msg["Subject"])[0]
+        subject = raw_subject[0]
+        if isinstance(subject, bytes):
+            subject = subject.decode(raw_subject[1] if raw_subject[1] else "utf-8")
 
+        # Extract body
+        body = ""
+        if msg.is_multipart():
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                if content_type == "text/plain" and part.get("Content-Disposition") is None:
+                    body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                    break
+        else:
+            body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
 
-issue_example = "access"  
-handle_ticket(issue_example)
+        result = parse_email(subject, body)
+        message = f"\U0001F4BE Subject: {result['subject']}\n\U0001F464 Name: {result['name']}\n\U0001F4CC Intent: {result['intent']}"
+
+        if send_to_telegram(message):
+            print("Telegram message sent successfully.")
+        else:
+            print("Failed to send Telegram message.")
+
+        mail.store(e_id, '+FLAGS', '\\Seen')  # Mark email as read
+
+    mail.logout()
+
+# Run the real inbox connection
+if __name__ == "__main__":
+    fetch_and_process_emails()
